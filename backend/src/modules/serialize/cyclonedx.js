@@ -8,16 +8,35 @@ function buildCycloneDX({ components, vulnMap, anomalies }) {
     metadata: {
       timestamp: new Date().toISOString(),
     },
-    components: components.map(c => ({
-      type: 'library',
-      name: c.name,
-      version: c.version,
-      purl: c.purl,
-      scope: c.dev ? 'optional' : 'required',
-    })),
+    components: components.map(c => buildComponent(c, anomalies)),
     vulnerabilities: buildVulnList(components, vulnMap),
-    properties: buildAnomalyProperties(components, anomalies),
   };
+}
+
+function buildComponent(c, anomalies) {
+  const component = {
+    type: 'library',
+    name: c.name,
+    version: c.version,
+    purl: c.purl,
+    scope: c.dev ? 'optional' : 'required',
+  };
+
+  // CycloneDX has no native "anomaly" field — attach as custom properties
+  // directly on the component they describe, namespaced so downstream tools
+  // can ignore them if they don't understand them. Per spec, components[]
+  // entries support their own properties[] array — this keeps each finding
+  // attributable to the exact package it's about, instead of floating in a
+  // detached top-level list with no reference back.
+  const hits = anomalies.get(c.purl) || [];
+  if (hits.length > 0) {
+    component.properties = hits.map(a => ({
+      name: `sbomtool:anomaly:${a.type}`,
+      value: `${a.severity} — ${a.reason}`,
+    }));
+  }
+
+  return component;
 }
 
 function buildVulnList(components, vulnMap) {
@@ -32,22 +51,6 @@ function buildVulnList(components, vulnMap) {
     });
   }
   return vulns;
-}
-
-// CycloneDX has no native "anomaly" field — attach as custom properties per component,
-// namespaced so downstream tools can ignore them if they don't understand them
-function buildAnomalyProperties(components, anomalies) {
-  const props = [];
-  for (const c of components) {
-    const hits = anomalies.get(c.purl) || [];
-    hits.forEach(a => {
-      props.push({
-        name: `sbomtool:anomaly:${a.type}`,
-        value: `${a.severity} — ${a.reason}`,
-      });
-    });
-  }
-  return props;
 }
 
 module.exports = { buildCycloneDX };
