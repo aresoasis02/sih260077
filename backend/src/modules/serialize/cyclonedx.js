@@ -22,12 +22,10 @@ function buildComponent(c, anomalies) {
     scope: c.dev ? 'optional' : 'required',
   };
 
-  // CycloneDX has no native "anomaly" field — attach as custom properties
-  // directly on the component they describe, namespaced so downstream tools
-  // can ignore them if they don't understand them. Per spec, components[]
-  // entries support their own properties[] array — this keeps each finding
-  // attributable to the exact package it's about, instead of floating in a
-  // detached top-level list with no reference back.
+  if (c.license && c.license !== 'UNKNOWN') {
+    component.licenses = [{ license: { id: c.license } }];
+  }
+
   const hits = anomalies.get(c.purl) || [];
   if (hits.length > 0) {
     component.properties = hits.map(a => ({
