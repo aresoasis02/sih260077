@@ -12,12 +12,19 @@ function parseLockfile(lockPath) {
   const components = [];
 
   for (const [pkgPath, pkgInfo] of Object.entries(lockData.packages)) {
-    if (pkgPath === '') continue; // root package itself
-    const name = pkgPath.replace('node_modules/', '');
-    if (!pkgInfo.version) continue; // workspace refs etc.
+    if (pkgPath === '') continue;
+    if (!pkgInfo.version) continue;
+
+    // pkgPath is "node_modules/foo" or, for a nested duplicate version,
+    // "node_modules/bar/node_modules/foo". The real npm package name is only the
+    // segment after the LAST "node_modules/" — registry lookups and declaredRanges
+    // matching both need the bare name, not the full nested tree path.
+    const segments = pkgPath.split('node_modules/');
+    const name = segments[segments.length - 1];
 
     components.push({
       name,
+      lockfilePath: pkgPath, // keep the full path too, useful for debugging/tree display later
       version: pkgInfo.version,
       purl: `pkg:npm/${encodeURIComponent(name)}@${pkgInfo.version}`,
       resolved: pkgInfo.resolved || null,
@@ -25,7 +32,6 @@ function parseLockfile(lockPath) {
       dev: pkgInfo.dev || false,
       optional: pkgInfo.optional || false,
       hasInstallScript: pkgInfo.hasInstallScript || false,
-      // raw declared range from the parent's perspective — needed later for §4c version-pinning check
       declaredRanges: findDeclaredRanges(lockData.packages, name),
     });
   }
@@ -33,8 +39,6 @@ function parseLockfile(lockPath) {
   return components;
 }
 
-// finds every place this package name was declared as a dependency, and at what range,
-// so the version-pinning anomaly check (loose ranges like "*" or "latest") has something to inspect
 function findDeclaredRanges(packages, targetName) {
   const ranges = [];
   for (const [, pkgInfo] of Object.entries(packages)) {

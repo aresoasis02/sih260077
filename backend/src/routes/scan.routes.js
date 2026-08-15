@@ -16,14 +16,31 @@ const { buildCycloneDX } = require('../modules/serialize/cyclonedx');
 const { buildRiskSummary } = require('../modules/serialize/riskSummary');
 const { npmHighImpact } = require('npm-high-impact');
 
-const FRESHNESS_CONCURRENCY = 25;
-const LICENSE_CONCURRENCY = 25;
+const FRESHNESS_CONCURRENCY = 8;  // lowered from 25 — public registry throttles hard past this
+const LICENSE_CONCURRENCY = 8;
+const BATCH_DELAY_MS = 250;       // small stagger between batches, reduces burstiness
 
 function addAnomalyHit(anomalies, purl, hit) {
   if (!hit) return;
   const existing = anomalies.get(purl) || [];
   existing.push(hit);
   anomalies.set(purl, existing);
+}
+
+// Wraps an async fn(name) so identical names share one in-flight/resolved call —
+// created fresh per scan (not module-level) so state never leaks across requests.
+function memoizeByName(fn) {
+  const cache = new Map();
+  return (name) => {
+    if (!cache.has(name)) {
+      cache.set(name, fn(name).catch(err => { cache.delete(name); throw err; }));
+    }
+    return cache.get(name);
+  };
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 router.post('/scan', async (req, res) => {
@@ -41,7 +58,6 @@ router.post('/scan', async (req, res) => {
     const anomalies = new Map();
     const freshnessCandidates = [];
 
-    // Pass 1: synchronous checks
     let typosquatHits = 0;
     for (const c of components) {
       const isKnownPopular = npmHighImpact.includes(c.name);
@@ -52,31 +68,27 @@ router.post('/scan', async (req, res) => {
       ].filter(Boolean);
 
       if (hits.some(h => h.type === 'typosquat')) typosquatHits++;
-
       hits.forEach(hit => addAnomalyHit(anomalies, c.purl, hit));
 
-      if (hits.length === 0) {
-        freshnessCandidates.push(c);
-      }
+      if (hits.length === 0) freshnessCandidates.push(c);
     }
 
-    // --- INSTRUMENTATION: remove once confirmed ---
     console.log(`[scan] typosquat hits: ${typosquatHits} / ${components.length} components checked`);
     console.log(`[scan] freshness candidates: ${freshnessCandidates.length}`);
-    // ------------------------------------------------
 
-    // Pass 2: freshness checks, batched
+    // dedupe: same package name appearing at multiple tree locations shares one network call
+    const memoizedFreshness = memoizeByName(name => checkFreshness(name));
+    const memoizedMetadata = memoizeByName(name => getPackageMetadata(name));
+
     let freshnessHits = 0;
     let freshnessErrors = 0;
     for (let i = 0; i < freshnessCandidates.length; i += FRESHNESS_CONCURRENCY) {
       const batch = freshnessCandidates.slice(i, i + FRESHNESS_CONCURRENCY);
       const results = await Promise.all(
         batch.map(c =>
-          checkFreshness(c.name).catch(err => {
+          memoizedFreshness(c.name).catch(err => {
             freshnessErrors++;
-            // --- INSTRUMENTATION: remove once confirmed ---
             console.log(`[scan] freshness check failed for ${c.name}: ${err.message}`);
-            // ------------------------------------------------
             return null;
           })
         )
@@ -87,22 +99,21 @@ router.post('/scan', async (req, res) => {
           addAnomalyHit(anomalies, batch[idx].purl, fresh);
         }
       });
+      if (i + FRESHNESS_CONCURRENCY < freshnessCandidates.length) await sleep(BATCH_DELAY_MS);
     }
 
-    // --- INSTRUMENTATION: remove once confirmed ---
     console.log(`[scan] freshness hits: ${freshnessHits}, errors/timeouts: ${freshnessErrors}`);
-    // ------------------------------------------------
 
-    // Pass 3: license + deprecation, batched, runs for every component
     for (let i = 0; i < components.length; i += LICENSE_CONCURRENCY) {
       const batch = components.slice(i, i + LICENSE_CONCURRENCY);
-      const results = await Promise.all(batch.map(c => getPackageMetadata(c.name)));
+      const results = await Promise.all(batch.map(c => memoizedMetadata(c.name)));
       results.forEach(({ license, deprecated }, idx) => {
         const c = batch[idx];
         c.license = license;
         addAnomalyHit(anomalies, c.purl, classifyLicense(license));
         addAnomalyHit(anomalies, c.purl, classifyDeprecation(deprecated));
       });
+      if (i + LICENSE_CONCURRENCY < components.length) await sleep(BATCH_DELAY_MS);
     }
 
     const sbom = buildCycloneDX({ components, vulnMap, anomalies });
