@@ -1,15 +1,18 @@
-//anamoly/freshness-Test Heuristics
+//anomaly/freshness.js
 
 const axios = require('axios');
 
 async function checkFreshness(componentName) {
-  const { data } = await axios.get(`https://registry.npmjs.org/${componentName}`);
+  const { data } = await axios.get(`https://registry.npmjs.org/${componentName}`, {
+    timeout: 5000,
+  });
   const latestVersion = data['dist-tags'].latest;
   const publishedDate = new Date(data.time[latestVersion]);
   const daysSincePublish = (Date.now() - publishedDate) / (1000 * 60 * 60 * 24);
 
   const downloadsRes = await axios.get(
-    `https://api.npmjs.org/downloads/point/last-week/${componentName}`
+    `https://api.npmjs.org/downloads/point/last-week/${componentName}`,
+    { timeout: 5000 }
   );
   const weeklyDownloads = downloadsRes.data.downloads || 0;
 

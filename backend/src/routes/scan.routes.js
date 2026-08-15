@@ -11,6 +11,8 @@ const { checkFreshness } = require('../modules/anomaly/freshness');
 const { checkVersionPinning } = require('../modules/anomaly/versionPinning');
 const { buildCycloneDX } = require('../modules/serialize/cyclonedx');
 
+const FRESHNESS_CONCURRENCY = 25; // tune down if you see 429s from npm registry
+
 router.post('/scan', async (req, res) => {
   const { githubUrl } = req.body;
   if (!githubUrl) return res.status(400).json({ error: 'githubUrl is required' });
@@ -24,18 +26,27 @@ router.post('/scan', async (req, res) => {
     const vulnMap = await queryVulnerabilities(components);
 
     const anomalies = new Map();
+    const freshnessCandidates = [];
+
+    // Pass 1: synchronous checks (typosquat, version-pinning) — instant, no network
     for (const c of components) {
-      const hits = [
-        checkTyposquat(c.name),
-        checkVersionPinning(c.declaredRanges),
-      ].filter(Boolean);
-      // freshness check is async + network-heavy — only run it on components
-      // that don't already have OTHER flags, to keep scan time reasonable in a demo
-      if (hits.length === 0) {
-        const fresh = await checkFreshness(c.name).catch(() => null);
-        if (fresh) hits.push(fresh);
+      const hits = [checkTyposquat(c.name), checkVersionPinning(c.declaredRanges)].filter(Boolean);
+      if (hits.length > 0) {
+        anomalies.set(c.purl, hits);
+      } else {
+        freshnessCandidates.push(c); // only check freshness if nothing else already flagged it
       }
-      if (hits.length) anomalies.set(c.purl, hits);
+    }
+
+    // Pass 2: freshness checks, batched with bounded concurrency instead of one-at-a-time
+    for (let i = 0; i < freshnessCandidates.length; i += FRESHNESS_CONCURRENCY) {
+      const batch = freshnessCandidates.slice(i, i + FRESHNESS_CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(c => checkFreshness(c.name).catch(() => null))
+      );
+      results.forEach((fresh, idx) => {
+        if (fresh) anomalies.set(batch[idx].purl, [fresh]);
+      });
     }
 
     const sbom = buildCycloneDX({ components, vulnMap, anomalies });

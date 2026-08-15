@@ -24,6 +24,7 @@ function parseLockfile(lockPath) {
       integrity: pkgInfo.integrity || null,
       dev: pkgInfo.dev || false,
       optional: pkgInfo.optional || false,
+      hasInstallScript: pkgInfo.hasInstallScript || false,
       // raw declared range from the parent's perspective — needed later for §4c version-pinning check
       declaredRanges: findDeclaredRanges(lockData.packages, name),
     });
