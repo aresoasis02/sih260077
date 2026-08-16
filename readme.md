@@ -53,6 +53,28 @@ netstat -ano | findstr :5050
 taskkill /PID <the_pid_from_above> /F
 ```
 
+## Running the Frontend
+
+1. Navigate to the frontend folder:
+   cd frontend
+
+2. Install dependencies:
+   npm install
+
+3. Set up environment variables:
+   cp .env.example .env
+   # then edit .env and set:
+   VITE_API_URL=http://localhost:5050   (backend URL)
+
+4. Start the dev server:
+   npm run dev
+   # Do NOT use --port 5050 — that's the backend's port.
+   # Frontend will run on its default port (usually 5173).
+
+5. Make sure the backend is running separately on port 5050
+   (see backend README) before using the app — frontend needs
+   it for API calls.
+
 ---
 
 ## Running a scan
